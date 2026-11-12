@@ -11,3 +11,5 @@ class Result:
     status: int | None
     result: str
     error: str
+    body: str
+    server: int | None

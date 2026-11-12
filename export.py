@@ -1,13 +1,14 @@
 import csv
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, fields
+from models import Result
 from uuid import uuid4
 
 
-def csv_file(path, records):
+def csv_file(path, records, columns=None):
     with path.open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=records[0].keys())
+        writer = csv.DictWriter(file, fieldnames=columns or records[0].keys())
         writer.writeheader()
         writer.writerows(records)
 
@@ -23,7 +24,7 @@ class Report:
 
     def save(self, rows, summary):
         stem = f"{summary['scenario']}-{summary['repetition']}"
-        csv_file(self.folder / f"{stem}-requests.csv", [asdict(r) for r in rows])
+        csv_file(self.folder / f"{stem}-requests.csv", [asdict(r) for r in rows], [f.name for f in fields(Result)])
         handler = logging.FileHandler(self.error_path, encoding="utf-8")
         self.log.addHandler(handler)
         try:
@@ -45,4 +46,5 @@ class Report:
         self.summaries.append(summary)
         (self.folder / f"{stem}.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
         csv_file(self.folder / "runs.csv", self.summaries)
+
 

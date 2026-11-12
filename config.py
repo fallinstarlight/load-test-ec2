@@ -2,11 +2,12 @@ import argparse
 import json
 import math
 from dataclasses import dataclass
-from ipaddress import IPv4Address
 from pathlib import Path
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
+ALB = "ldb-42-759300108.us-east-1.elb.amazonaws.com"
+HOSTS = (ALB, "localhost", "127.0.0.1")
 
 
 @dataclass(frozen=True)
@@ -17,45 +18,51 @@ class Scenario:
     repetitions: int
 
 
-def validate_url(url, addresses):
+SUITE = (Scenario("baseline", 20, 1, 1), Scenario("scenario1", 100, 10, 3),
+         Scenario("scenario2", 1000, 50, 3), Scenario("scenario3", 5000, 100, 3))
+
+
+def validate_url(url):
     parts = urlsplit(url)
-    ip = IPv4Address(parts.hostname or "")
-    if (parts.scheme != "http" or parts.netloc not in (str(ip), f"{ip}:80")
-            or parts.path not in ("", "/") or parts.query or parts.fragment
-            or not isinstance(addresses, list) or str(ip) not in addresses):
-        raise ValueError("Use the allowlisted IPv4 address and the root URL on port 80.")
-    return f"http://{ip}/"
+    host = parts.hostname
+    if host not in HOSTS or url.lower() not in {
+        f"http://{host}{port}{path}" for port in ("", ":80") for path in ("", "/")
+    }:
+        raise ValueError("Use the authorized ALB or a loopback HTTP root URL on port 80.")
+    return f"http://{host}/"
 
 
 def configuration():
-    p = argparse.ArgumentParser(description="Benchmark the Apache ASCII art endpoint.")
-    p.add_argument("--url", required=True)
-    p.add_argument("--mode", choices=["single", "suite"], default="single")
-    p.add_argument("--requests", type=int)
-    p.add_argument("--threads", type=int)
-    p.add_argument("--repetitions", type=int)
+    p = argparse.ArgumentParser(description="Lab 4.2 ALB benchmark")
+    p.add_argument("--url", default=f"http://{ALB}/")
+    p.add_argument("--mode", choices=("single", "suite", "fault"), default="single")
+    for key in ("requests", "threads", "repetitions"):
+        p.add_argument("--"+key, type=int)
+    p.add_argument("--healthy", nargs="+", type=int, choices=(1, 2, 3))
     p.add_argument("--timeout", type=float, default=5)
     p.add_argument("--pause", type=float, default=10)
     p.add_argument("--output", type=Path, default=ROOT / "results")
-    p.add_argument("--allowlist", type=Path, default=ROOT / "authorized.json")
+    p.add_argument("--lab41", action="append", type=Path, default=[], help="Lab 4.1 runs.csv (repeatable)")
     a = p.parse_args()
     try:
-        a.url = validate_url(a.url, json.loads(a.allowlist.read_text(encoding="utf-8-sig")))
+        a.url = validate_url(a.url)
+        allowed = json.loads((ROOT / "authorized.json").read_text(encoding="utf-8-sig"))
+        if not isinstance(allowed, list) or urlsplit(a.url).hostname not in allowed:
+            raise ValueError("Destination missing from authorized.json")
+        a.output.mkdir(exist_ok=True, parents=True)
     except (ValueError, OSError) as exc:
         p.error(str(exc))
-    if not math.isfinite(a.timeout) or a.timeout <= 0:
-        p.error("Timeout must be finite and positive.")
-    if not math.isfinite(a.pause) or a.pause < 0:
-        p.error("Pause must be finite and nonnegative.")
+    if not math.isfinite(a.timeout) or a.timeout <= 0 or not math.isfinite(a.pause) or a.pause < 0:
+        p.error("Use a finite positive timeout and a finite nonnegative pause.")
+    if bool(a.healthy) != (a.mode == "fault"):
+        p.error("Provide --healthy with the expected server numbers in fault mode only.")
+    sizes = (a.requests, a.threads, a.repetitions)
+    if a.mode != "single" and any(x is not None for x in sizes):
+        p.error("Suite and fault parameters are fixed.")
     if a.mode == "suite":
-        if any(x is not None for x in (a.requests, a.threads, a.repetitions)):
-            p.error("Suite sizes and repetitions are fixed. Use single mode to customize.")
-        scenarios = [Scenario("baseline", 20, 1, 1), Scenario("scenario1", 100, 10, 3),
-                     Scenario("scenario2", 1000, 50, 3), Scenario("scenario3", 5000, 100, 3)]
-    else:
-        n, t, r = [value if value is not None else default for value, default in
-                   zip((a.requests, a.threads, a.repetitions), (20, 1, 1))]
-        if not (1 <= n <= 5000 and 1 <= t <= 100 and r >= 1):
-            p.error("Use 1–5000 requests, 1–100 threads, and at least one repetition.")
-        scenarios = [Scenario("single", n, t, r)]
-    return a, scenarios
+        return a, SUITE
+    n, t, r = (v if v is not None else d for v, d in zip(sizes, (20, 1, 1)))
+    if not (1 <= n <= 5000 and 1 <= t <= 100 and r >= 1):
+        p.error("Use 1–5000 requests, 1–100 threads and at least one repetition.")
+    return a, [Scenario(a.mode, n, t, r)]
+
